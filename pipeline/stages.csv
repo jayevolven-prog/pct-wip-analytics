@@ -1,0 +1,12 @@
+op_from,op_to,stage,stage_order,flow
+10,19,Mould and cast,10,casting
+20,59,Fettle,20,casting
+60,69,Casting inspection,30,casting
+70,79,Core machining,40,casting
+80,99,Casting despatch,90,casting
+100,109,Machining prep,100,machining
+110,119,Machining op 1,110,machining
+120,129,Machining op 2,120,machining
+130,199,Machining op 3+,130,machining
+200,279,Final inspection,270,machining
+280,299,Machined despatch,290,machining

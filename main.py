@@ -9,7 +9,8 @@ print("source:", src, flush=True)
 for args in (["pipeline/clean.py", src, "work/wip.parquet"],
              ["pipeline/prep.py", "work/wip.parquet", "work/wip2.parquet"],
              ["pipeline/models.py", "work/wip2.parquet", "work/results.json"],
-             ["pipeline/build_dash.py", "work/wip2.parquet", "work/results.json", "work/dash"]):
+             ["pipeline/build_dash.py", "work/wip2.parquet", "work/results.json", "work/dash"],
+             ["pipeline/report.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report"]):
     print("running", args[0], flush=True)
     subprocess.run([PY, "-I", *args], check=True)
 
@@ -22,6 +23,11 @@ for f in glob.glob("work/dash/*.json"):
     name = "agg_" + os.path.basename(f)[:-5]
     pd.DataFrame(json.load(open(f))["rows"]).to_sql(name, eng, if_exists="replace", index=False)
     print(name, flush=True)
+for f in sorted(glob.glob("work/report/*.json")):
+    name = "rpt_" + os.path.basename(f)[:-5]
+    rows = json.load(open(f))["rows"]
+    pd.DataFrame(rows).astype({"value": str} if name == "rpt_kpis" else {}).to_sql(name, eng, if_exists="replace", index=False)
+    print(name, len(rows), flush=True)
 with eng.begin() as c:
     c.execute(text("CREATE TABLE IF NOT EXISTS model_runs (run_at timestamptz DEFAULT now(), source text, results jsonb)"))
     c.execute(text("INSERT INTO model_runs (source, results) VALUES (:s, CAST(:r AS jsonb))"),
