@@ -10,7 +10,8 @@ for args in (["pipeline/clean.py", src, "work/wip.parquet"],
              ["pipeline/prep.py", "work/wip.parquet", "work/wip2.parquet"],
              ["pipeline/models.py", "work/wip2.parquet", "work/results.json"],
              ["pipeline/build_dash.py", "work/wip2.parquet", "work/results.json", "work/dash"],
-             ["pipeline/report.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report"]):
+             ["pipeline/report.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report"],
+             ["pipeline/report2.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"]):
     print("running", args[0], flush=True)
     subprocess.run([PY, "-I", *args], check=True)
 
