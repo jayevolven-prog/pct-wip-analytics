@@ -724,5 +724,47 @@ for p in topc:
     rt.append(row)
 save("part_route_time", rt, "Top 20 cast parts by units: estimated labour hours per casting at moulding, fettling and despatch (allocation method), with model estimate alongside.")
 
+# ================================================================ CASTING SIZE AND MIX (no weights in data: size = standard labour content)
+mq_ = ua[ua.work_centre.isin(LINES)].groupby(["date", "work_centre", "part_no"]).qty.sum().reset_index()
+mq_ = mq_.join(mq_.groupby(["date", "work_centre"]).qty.sum().rename("dq"), on=["date", "work_centre"]).merge(ah[["work_centre", "date", "hrs"]], on=["work_centre", "date"], how="left")
+mq_["alloc"] = mq_.hrs * mq_.qty / mq_.dq.replace(0, np.nan)
+std = mq_.groupby("part_no").agg(u=("qty", "sum"), h=("alloc", "sum"), days=("date", "nunique"))
+std["std_hpu"] = std.h / std.u.replace(0, np.nan)
+std["units_per_day"] = std.u / std.days
+std = std[std.u > 0].dropna(subset=["std_hpu"])
+cuts = [0, 0.1, 0.4, 1e9]; labs = ["Small (under 0.1 h)", "Medium (0.1 to 0.4 h)", "Large (over 0.4 h)"]
+std["size"] = pd.cut(std.std_hpu, cuts, labels=labs).astype(str)
+mo2 = mo.join(std[["std_hpu", "size"]], on="part_no").dropna(subset=["std_hpu"])
+mo2["std_hrs"] = mo2.qty * mo2.std_hpu
+mould_lab = ay[ay.work_centre.isin(LINES)].groupby("yr").labour_hrs.sum()
+sz = []
+for y in range(2021, 2027):
+    g = mo2[mo2.yr == y]; f = ann if y == 2026 else 1.0
+    row = {"year": str(y), "castings": g.qty.sum() * f, "standard_hrs": g.std_hrs.sum() * f, "avg_size_hrs": g.std_hrs.sum() / g.qty.sum(),
+           "actual_mould_hrs": float(mould_lab.get(y, np.nan)) * f, "efficiency_pct": 100 * g.std_hrs.sum() / float(mould_lab.get(y, np.nan))}
+    for l in labs: row[l.split(" ")[0].lower() + "_units"] = g[g["size"] == l].qty.sum() * f
+    sz.append(row)
+b0 = sz[0]
+for r in sz:
+    r["castings_idx"] = 100 * r["castings"] / b0["castings"]; r["std_hrs_idx"] = 100 * r["standard_hrs"] / b0["standard_hrs"]; r["size_idx"] = 100 * r["avg_size_hrs"] / b0["avg_size_hrs"]
+save("size_mix_year", sz, "Size proxy: each part's standard moulding labour hours per casting (all-years average from the attendance model), held fixed. Standard hours = castings x standard hours per casting, so it measures work content regardless of mix. Efficiency = standard hours / actual moulding labour hours. 2026 annualised.")
+pk = max(sz, key=lambda r: r["castings"]); l26 = sz[-1]
+kpi("size_peak_year", pk["year"], "Peak castings year")
+kpi("size_units_chg", 100 * (l26["castings"] / pk["castings"] - 1), "Castings 2026 vs peak", "%")
+kpi("size_stdhrs_chg", 100 * (l26["standard_hrs"] / pk["standard_hrs"] - 1), "Work content (standard hours) 2026 vs peak-castings year", "%")
+kpi("size_avg_chg", 100 * (l26["avg_size_hrs"] / pk["avg_size_hrs"] - 1), "Average casting size 2026 vs peak-castings year", "%")
+kpi("size_avg_chg_2021", 100 * (l26["avg_size_hrs"] / b0["avg_size_hrs"] - 1), "Average casting size 2026 vs 2021", "%")
+kpi("eff_2025", sz[4]["efficiency_pct"], "Moulding efficiency 2025 (standard / actual hours)", "%")
+kpi("eff_2026", l26["efficiency_pct"], "Moulding efficiency 2026", "%")
+kpi("eff_best", max(r["efficiency_pct"] for r in sz), "Best year moulding efficiency", "%")
+kpi("eff_best_year", max(sz, key=lambda r: r["efficiency_pct"])["year"], "Best efficiency year")
+kpi("small_share_peak", 100 * pk["small_units"] / pk["castings"], "Small castings share in peak year", "%")
+kpi("small_share_2026", 100 * l26["small_units"] / l26["castings"], "Small castings share 2026", "%")
+sl = mo2.groupby(["work_centre", "size"]).qty.sum().unstack(fill_value=0)
+save("size_by_line", [{"line": l, **{c.split(" ")[0].lower() + "_units": float(r.get(c, 0)) for c in labs}, "avg_size_hrs": float((mo2[mo2.work_centre == l].std_hrs.sum()) / max(mo2[mo2.work_centre == l].qty.sum(), 1))} for l, r in sl.iterrows()], "Castings by size class per moulding line, 2021-2026.")
+ysz = ycl.join(d.groupby("wo_base").part_no.first().rename("part_no")).join(std[["size"]], on="part_no").dropna(subset=["size"])
+save("size_yield", [{"size": l, "orders": int((ysz["size"] == l).sum()), "yield_pct": 100 * ysz[ysz["size"] == l].desp.clip(upper=ysz[ysz["size"] == l]["first"]).sum() / max(ysz[ysz["size"] == l]["first"].sum(), 1),
+                     "parts": int((std["size"] == l).sum())} for l in labs], "Casting yield and part count by size class.")
+
 save("kpis", KPI)
 print("report done", flush=True)
