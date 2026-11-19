@@ -13,7 +13,8 @@ SRC, STAGES, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(OUT, exist_ok=True)
 HERE = os.path.dirname(os.path.abspath(__file__))
 CODE = open(os.path.abspath(__file__)).read()
-SHIFT_HRS_WK = 40.0          # assumption: one 8 h shift, 5 days
+SHIFT_HRS_WK = 39.0          # PCT week: 8.5 h Mon-Thu, 6 h Fri
+DAY_HRS = {0: 8.5, 1: 8.5, 2: 8.5, 3: 8.5, 4: 6.0}
 IDEAL_Q = 0.20               # best-demonstrated rate = 20th percentile hrs/unit
 KPI = []
 
@@ -637,6 +638,91 @@ pr = d[(d.type == "Lost") & d.lost_time.str.contains("Pattern", na=False)]
 kpi("pattern_repair_hrs", pr.hrs_clean.sum(), "Hours lost to pattern, die, core box and fixture repair", "hrs")
 kpi("pattern_repair_760", pr[pr.work_centre == "760"].hrs_clean.sum(), "Of which on 760", "hrs")
 kpi("pattern_repair_huv", pr[pr.work_centre == "HUVENE LATHE"].hrs_clean.sum(), "Of which on Huvene lathe", "hrs")
+
+# ================================================================ LABOUR TIME MODEL (attendance-based)
+from scipy.optimize import nnls
+AREAS = {"ASF": "Moulding ASF", "ASC": "Moulding ASC", "GSL": "Moulding GSL", "AIRSET SPURLINE": "Moulding Airset", "DIE": "Moulding DIE", "RAPID": "Moulding Rapid",
+         "FETT": "Fettling", "DESP": "Casting despatch", "MDESP": "Machined despatch", "CORE MACHINING": "Core machining", "CINSP": "Casting inspection"}
+lb = d[d.date.dt.dayofweek < 5].copy()
+lb["day_hrs"] = lb.date.dt.dayofweek.map(DAY_HRS)
+# hours already booked on timed (machining) work that day come off the person's day
+timed = lb[lb.hrs_clean > 0].groupby(["date", "name"]).hrs_clean.sum().clip(upper=12)
+ua = lb[lb.work_centre.isin(AREAS)]
+cnt = ua.groupby(["date", "name", "work_centre"]).size().rename("n").reset_index()
+tot_n = lb.groupby(["date", "name"]).size().rename("all_n")
+cnt = cnt.join(tot_n, on=["date", "name"]).join(timed.rename("timed"), on=["date", "name"])
+cnt["timed"] = cnt.timed.fillna(0)
+cnt["day_hrs"] = cnt.date.dt.dayofweek.map(DAY_HRS)
+untimed_n = lb[lb.hrs_clean.fillna(0) == 0].groupby(["date", "name"]).size().rename("untimed_n")
+cnt = cnt.join(untimed_n, on=["date", "name"])
+cnt["hrs"] = (cnt.day_hrs - cnt.timed).clip(lower=0) * cnt.n / cnt.untimed_n.clip(lower=1)
+rate = d[d.rate_gbp_hr > 0].groupby("name").rate_gbp_hr.median()
+cnt["gbp"] = cnt.hrs * cnt.name.map(rate).fillna(d[d.rate_gbp_hr > 0].rate_gbp_hr.median())
+ah = cnt.groupby(["work_centre", "date"]).agg(hrs=("hrs", "sum"), gbp=("gbp", "sum"), people=("name", "nunique")).reset_index()
+# fettling crews: initials in notes are recorded inconsistently between years, so labour is booker-based (a minimum)
+aq = ua.groupby(["work_centre", "date"]).qty.sum().rename("qty").reset_index()
+ah = ah.merge(aq, on=["work_centre", "date"], how="left")
+ah["yr"] = ah.date.dt.year
+ay = ah.groupby(["work_centre", "yr"]).agg(labour_hrs=("hrs", "sum"), labour_gbp=("gbp", "sum"), units=("qty", "sum"), days=("date", "nunique"), people_per_day=("people", "mean")).reset_index()
+ay["hrs_per_unit"] = ay.labour_hrs / ay.units.replace(0, np.nan)
+ay["gbp_per_unit"] = ay.labour_gbp / ay.units.replace(0, np.nan)
+ay["units_per_labour_hr"] = ay.units / ay.labour_hrs.replace(0, np.nan)
+ay["area"] = ay.work_centre.map(AREAS); ay["year"] = ay.yr.astype(str)
+ay = ay[ay.units > 0]
+save("area_labour_year", ay.drop(columns="yr"), "Estimated labour hours per area: each operator's day (8.5 h Mon-Thu, 6 h Fri) minus hours booked on timed work, split across the areas they booked that day in proportion to bookings. Fettling crews are often booked by one person, so fettling hours are a minimum. Rate = operator median GBP/hr.")
+fdy = ay[ay.work_centre.isin(["ASF", "ASC", "GSL", "AIRSET SPURLINE", "DIE", "RAPID", "FETT", "DESP"])].groupby("yr")[["labour_hrs", "labour_gbp"]].sum()
+mq = d[d.op.between(10, 19)].groupby("yr").qty.sum()
+fdy["units"] = mq; fdy["hrs_per_casting"] = fdy.labour_hrs / fdy.units; fdy["gbp_per_casting"] = fdy.labour_gbp / fdy.units
+save("foundry_labour_year", [{"year": str(y), **{k: float(v) for k, v in r.items()}} for y, r in fdy.iterrows()], "Foundry labour (moulding, fettling, casting despatch) per moulded casting.")
+kpi("hpc_2021", fdy.loc[2021, "hrs_per_casting"], "Foundry labour hours per casting 2021", "hrs")
+kpi("hpc_2025", fdy.loc[2025, "hrs_per_casting"], "Foundry labour hours per casting 2025", "hrs")
+kpi("hpc_2026", fdy.loc[2026, "hrs_per_casting"], "Foundry labour hours per casting 2026", "hrs")
+kpi("gpc_2025", fdy.loc[2025, "gbp_per_casting"], "Foundry labour cost per casting 2025", "GBP")
+kpi("gpc_2026", fdy.loc[2026, "gbp_per_casting"], "Foundry labour cost per casting 2026", "GBP")
+kpi("foundry_hrs_2025", fdy.loc[2025, "labour_hrs"], "Foundry labour hours 2025", "hrs")
+
+# per-part time per area: NNLS on daily area hours = sum(q_p,d * t_p) + c
+pt_rows, fit_rows = [], []
+for wc in AREAS:
+    g = ua[(ua.work_centre == wc) & (ua.yr <= 2026)]
+    if g.date.nunique() < 60: continue
+    hd = ah[ah.work_centre == wc].set_index("date").hrs
+    bd = g.groupby("part_no").date.nunique()
+    keep = list(bd[bd >= 15].index)
+    g = g.assign(pc=np.where(g.part_no.isin(keep), g.part_no, "Other parts"))
+    X = g.pivot_table(index="date", columns="pc", values="qty", aggfunc="sum", fill_value=0)
+    X = X.reindex(hd.index).fillna(0)
+    A = np.c_[X.values, np.ones(len(X))]
+    coef, _ = nnls(A, hd.values, maxiter=5000)
+    pred = A @ coef; r2 = 1 - ((hd.values - pred) ** 2).sum() / ((hd.values - hd.values.mean()) ** 2).sum()
+    fit_rows.append({"area": AREAS[wc], "days": len(X), "parts_modelled": len(keep), "r2": r2, "fixed_hrs_per_day": coef[-1]})
+    # proportional allocation per part
+    gq = g.groupby(["date", "part_no"]).qty.sum().reset_index()
+    gq = gq.join(gq.groupby("date").qty.sum().rename("dq"), on="date").join(hd.rename("dh"), on="date")
+    gq["alloc"] = gq.dh * gq.qty / gq.dq.replace(0, np.nan)
+    pa = gq.groupby("part_no").agg(units=("qty", "sum"), alloc_hrs=("alloc", "sum"))
+    for pc, t in zip(X.columns, coef[:-1]):
+        if pc == "Other parts": continue
+        u = pa.loc[pc, "units"]
+        pt_rows.append({"part_no": pc, "area": AREAS[wc], "units": u, "nnls_hrs_per_unit": t, "alloc_hrs_per_unit": pa.loc[pc, "alloc_hrs"] / u if u else None,
+                        "gbp_per_unit": t * float(rate.median())})
+save("area_fit", fit_rows, "Non-negative least squares fit per area: daily labour hours = sum of units x hours per unit by part + fixed hours per day.")
+pt = pd.DataFrame(pt_rows)
+save("part_area_time", pt.sort_values("units", ascending=False), "Estimated labour hours per unit by part and area. NNLS = model estimate; alloc = day hours shared by quantity.")
+# route total for top cast parts
+topc = d[d.op.between(10, 19)].groupby("part_no").qty.sum().nlargest(20).index
+rt = []
+for p in topc:
+    sub = pt[pt.part_no == p]
+    row = {"part_no": p, "units": float(d[(d.op.between(10, 19)) & (d.part_no == p)].qty.sum())}
+    for nm, sel in (("mould", sub.area.str.startswith("Moulding")), ("fettle", sub.area == "Fettling"), ("despatch", sub.area == "Casting despatch")):
+        row[nm + "_hrs"] = float(sub[sel].nnls_hrs_per_unit.sum()) if sel.any() else None
+        row[nm + "_alloc"] = float(sub[sel].alloc_hrs_per_unit.sum()) if sel.any() else None
+    row["total_hrs"] = sum(v for k, v in row.items() if k.endswith("_hrs") and v is not None)
+    row["total_alloc"] = sum(v for k, v in row.items() if k.endswith("_alloc") and v is not None)
+    row["gbp_per_unit"] = row["total_alloc"] * float(rate.median())
+    rt.append(row)
+save("part_route_time", rt, "Top 20 cast parts by units: estimated labour hours per casting at moulding, fettling and despatch (allocation method), with model estimate alongside.")
 
 save("kpis", KPI)
 print("report done", flush=True)
