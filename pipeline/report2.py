@@ -65,13 +65,13 @@ for wc, nm in AREAS.items():
     g = day[day.work_centre == wc]
     if g.date.nunique() < 60: continue
     best = g[g.yr <= 2025].earned.quantile(0.9)
-    for per in ["2021", "2022", "2023", "2024", "2025", "2026", "2021-2025"]:
-        gg = g[g.yr <= 2025] if per == "2021-2025" else g[g.yr == int(per)]
+    for per in ["2021", "2022", "2023", "2024", "2025", "2026", "2021-2025", "2021-2026"]:
+        gg = g[g.yr <= 2025] if per == "2021-2025" else g if per == "2021-2026" else g[g.yr == int(per)]
         if gg.empty: continue
-        yrs = range(2021, 2026) if per == "2021-2025" else [int(per)]
+        yrs = range(2021, 2026) if per == "2021-2025" else range(2021, 2027) if per == "2021-2026" else [int(per)]
         A = len(gg) / sum(wdy.get(y, 0) for y in yrs)
         P = min(gg.earned.mean() / best, 1.0)
-        yr = None if per == "2021-2025" else int(per)
+        yr = None if "-" in per else int(per)
         if wc in LINES: Q, n = yld(m_, f_, first_wc[first_wc == wc].index, yr); qb = "fettled / moulded"
         elif wc == "FETT": Q, n = yld(f_, dsp, None, yr); qb = "despatched / fettled"
         else: Q, n = 1.0, 0; qb = "no downstream stage; set to 100%"
@@ -168,6 +168,10 @@ save("monthly_series", [{"month": str(i), **{c: r[c] for c in cols}} for i, r in
 O = pd.DataFrame({"Batch size": o.qty, "Casting size (std hrs)": o["size"], "Mould to fettle wait": o.wait_mf.where((o.wait_mf >= 0) & (o.wait_mf <= 365)), "Lead time": o.lead.where((o.lead >= 0) & (o.lead <= 365)),
                   "Yield": o["yield"].where(mature.reindex(o.index).fillna(False)), "Times part ordered": o.repeat, "Started after 21st": o.month_end_start, "Start year": o.mould.dt.year})
 save("corr_orders", sorted(corr_pairs(O, "order", 200), key=lambda r: -abs(r["rho"])), f"Spearman correlation across {len(O)} casting works orders, Benjamini-Hochberg 5%.")
+O26 = O[O["Start year"] == 2026].drop(columns="Start year"); c26 = {(r["a"], r["b"]): r for r in corr_pairs(O26, "order 2026", 60)}
+save("corr_orders_2026", [{"a": r["a"], "b": r["b"], "rho_all": r["rho"], "n_all": r["n"], "rho_2026": c26.get((r["a"], r["b"]), {}).get("rho"), "n_2026": c26.get((r["a"], r["b"]), {}).get("n"), "sig_2026": c26.get((r["a"], r["b"]), {}).get("significant")} for r in sorted(corr_pairs(O.drop(columns="Start year"), "order", 200), key=lambda r: -abs(r["rho"]))], "Order-level Spearman correlations, all orders beside orders started in 2026.")
+M26 = M[M.index >= "2026-01"]; m26 = {(r["a"], r["b"]): r for r in corr_pairs(M26, "2026", 8)}
+save("corr_monthly_2026", [{"a": r["a"], "b": r["b"], "rho_all": r["rho"], "robust_all": r["robust"], "rho_2026": m26.get((r["a"], r["b"]), {}).get("rho"), "p_2026": m26.get((r["a"], r["b"]), {}).get("p"), "n_2026": m26.get((r["a"], r["b"]), {}).get("n")} for r in sorted(lev, key=lambda r: -abs(r["rho"]))], f"Monthly Spearman correlations, 70 months beside the {len(M26)} complete months of 2026. Ten points is too few to test; 2026 values are indicative only.")
 # lag: weekly moulded -> fettled / despatched
 W = pd.DataFrame({"m": mo.set_index("date").qty.resample("W").sum(), "f": d[d.work_centre == "FETT"].set_index("date").qty.resample("W").sum(), "d": d[d.work_centre == "DESP"].set_index("date").qty.resample("W").sum()}).fillna(0)
 W = W[(W.index >= "2021-01-10") & (W.index < "2026-08-01")]

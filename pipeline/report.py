@@ -766,5 +766,41 @@ ysz = ycl.join(d.groupby("wo_base").part_no.first().rename("part_no")).join(std[
 save("size_yield", [{"size": l, "orders": int((ysz["size"] == l).sum()), "yield_pct": 100 * ysz[ysz["size"] == l].desp.clip(upper=ysz[ysz["size"] == l]["first"]).sum() / max(ysz[ysz["size"] == l]["first"].sum(), 1),
                      "parts": int((std["size"] == l).sum())} for l in labs], "Casting yield and part count by size class.")
 
+# ---- 2026 beside the whole dataset (added tables, prefix y26_)
+wo_start = d.groupby("wo_base").date.min()
+def _in26(idx): return wo_start.reindex(idx).dt.year.values == 2026
+def _yl(g):
+    f_ = g["first"].sum(); k_ = g.desp.clip(upper=g["first"]).sum()
+    return {"orders": len(g), "started": f_, "lost": f_ - k_, "yield_pct": 100 * k_ / f_ if f_ else None}
+def _both(name, a, b): return {"group": name, **{k + "_all": v for k, v in a.items()}, **{k + "_2026": v for k, v in b.items()}}
+def _injj(idx): return _in26(idx) & (wo_start.reindex(idx).values < np.datetime64("2026-08-01"))
+save("y26_yield_line", [{**_both(wc, _yl(g), _yl(g[_in26(g.index)])), "orders_janjul": int(_injj(g.index).sum()), "yield_pct_janjul": _yl(g[_injj(g.index)])["yield_pct"]} for wc in LINES + ["All lines"] for g in [ycl if wc == "All lines" else ycl[ycl.line == wc]]],
+     "Casting yield by moulding line: all orders 2021-2026 beside orders started in 2026. Recent 2026 orders may not be despatched yet.")
+_pa = ycp.groupby("part_no").apply(lambda g: pd.Series(_yl(g))); _p26 = ycp[_in26(ycp.index)].groupby("part_no").apply(lambda g: pd.Series(_yl(g)))
+_pl = ycp.groupby("part_no").line.agg(lambda x: x.mode().iat[0] if x.notna().any() else None)
+_e = {"orders": 0, "started": 0, "lost": 0, "yield_pct": None}
+def _prow(p): return {**_both(p, _pa.loc[p].to_dict(), _p26.loc[p].to_dict() if p in _p26.index else _e), "line": _pl.get(p)}
+save("y26_yield_part_all", [_prow(p) for p in _pa[_pa.orders >= 5].sort_values("lost", ascending=False).head(10).index], "Ten parts losing the most castings 2021-2026, with their 2026 figures.")
+save("y26_yield_part_2026", [_prow(p) for p in _p26.sort_values("lost", ascending=False).head(10).index] if len(_p26) else [], "Ten parts losing the most castings on orders started in 2026, with their all-years figures.")
+def _w(sd):
+    w1 = (sd["Fettle"] - sd["Mould and cast"]).dt.days.dropna(); w2 = (sd["Casting despatch"] - sd["Fettle"]).dt.days.dropna()
+    return {"orders": len(sd), "mf_median": w1.median(), "mf_p90": w1.quantile(.9), "fd_median": w2.median(), "fd_p90": w2.quantile(.9)}
+_wr = []
+for wc in LINES + ["All lines"]:
+    sd = st_dates if wc == "All lines" else st_dates.reindex(first_line[first_line == wc].index)
+    sd = sd.dropna(subset=["Mould and cast"])
+    _wr.append(_both(wc, _w(sd), _w(sd[sd["Mould and cast"].dt.year == 2026])))
+save("y26_waits_line", _wr, "Days between first bookings at each stage, all orders beside orders moulded in 2026. 2026 orders still waiting are not counted, so 2026 waits are understated.")
+_fr = []
+for stg, lo, hi in (("Mould and cast", 10, 19), ("Fettle", 20, 59), ("Casting inspection", 60, 69), ("Core machining", 70, 79), ("Casting despatch", 80, 99), ("Machining", 100, 199), ("Final inspection", 200, 279), ("Machined despatch", 280, 299)):
+    def _f(g): return {"units": g.qty.sum(), "orders": g.wo_base.nunique(), "parts": g.part_no.nunique(), "people": g.name.nunique()}
+    g = d[d.op.between(lo, hi)]
+    if g.qty.sum() > 0: _fr.append(_both(stg, _f(g), _f(g[g.yr == 2026])))
+save("y26_flow", _fr, "Bookings by stage, whole dataset (4 Jan 2021 to 19 Nov 2026) beside 2026 only.")
+_m26 = mo2[mo2.date.dt.year == 2026]
+def _s(g): return {**{c.split(" ")[0].lower(): float(g[g["size"] == c].qty.sum()) for c in labs}, "avg_size": float(g.std_hrs.sum() / g.qty.sum()) if g.qty.sum() else None}
+save("y26_size_line", [_both(l, _s(g), _s(g[g.date.dt.year == 2026])) for l in LINES + ["All lines"] for g in [mo2 if l == "All lines" else mo2[mo2.work_centre == l]]], "Castings by size class per moulding line, whole dataset beside 2026.")
+save("y26_size_yield", [_both(l, _yl(ysz[ysz["size"] == l]), _yl(ysz[(ysz["size"] == l) & _in26(ysz.index)])) for l in labs], "Casting yield by size class, all orders beside orders started in 2026.")
+
 save("kpis", KPI)
 print("report done", flush=True)
