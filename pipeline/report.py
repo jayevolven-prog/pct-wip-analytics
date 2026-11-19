@@ -445,7 +445,7 @@ F = ["part_no", "work_centre", "log_qty", "op", "repeats", "month"]
 tr, te = jq[jq.yr <= 2023], jq[jq.yr >= 2024]
 preds = {}
 for a in (0.1, 0.5, 0.9):
-    m = lgb.LGBMRegressor(objective="quantile", alpha=a, n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=10, verbose=-1)
+    m = lgb.LGBMRegressor(objective="quantile", alpha=a, n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=10, random_state=0, deterministic=True, n_jobs=1, verbose=-1)
     m.fit(tr[F], np.log(tr.hrs)); preds[a] = np.exp(m.predict(te[F]))
     if a == 0.5:
         contrib = m.predict(te[F], pred_contrib=True)
@@ -499,5 +499,144 @@ kpi("phantom_total", d.loc[d.flag_hrs_mismatch, "hrs"].sum(), "Phantom booked ho
 kpi("phantom_share", 100 * d.loc[d.flag_hrs_mismatch, "hrs"].sum() / (d.loc[d.flag_hrs_mismatch, "hrs"].sum() + d.hrs_clean.sum()), "Phantom share of recorded hours", "%")
 kpi("timed_2026", dq[-1]["machining_timed_pct"], "Machining entries with time 2026", "%")
 kpi("timed_2025", dq[-2]["machining_timed_pct"], "Machining entries with time 2025", "%")
+
+# ================================================================ CASTING AND WHOLE CHAIN
+LINES = ["ASF", "ASC", "GSL", "AIRSET SPURLINE", "DIE", "RAPID"]
+mo = d[d.op.between(10, 19) & d.work_centre.isin(LINES)].copy()
+ann = 365 / END.dayofyear
+ly = mo.groupby(["work_centre", "yr"]).qty.sum().unstack(fill_value=0)
+rows_ly = []
+for wc, r in ly.iterrows():
+    row = {"line": wc}
+    for y in range(2021, 2027): row[f"y{y}"] = float(r.get(y, 0)) * (ann if y == 2026 else 1)
+    row["peak_year"] = str(int(r.idxmax())); row["change_vs_peak_pct"] = 100 * (row["y2026"] / max(r.max(), 1) - 1)
+    rows_ly.append(row)
+save("cast_line_year", rows_ly, "Moulded units per line per year. 2026 annualised from 19 Nov.")
+tot = mo.groupby("yr").qty.sum()
+kpi("moulded_peak", tot.max(), "Peak annual moulded units"); kpi("moulded_peak_year", str(int(tot.idxmax())), "Peak moulding year")
+kpi("moulded_2026_ann2", tot.get(2026, 0) * ann, "Moulded units 2026 annualised")
+kpi("moulded_vs_peak", 100 * (tot.get(2026, 0) * ann / tot.max() - 1), "2026 moulded units vs peak year", "%")
+lm = mo.groupby([mo.date.dt.to_period("M"), "work_centre"]).qty.sum().unstack(fill_value=0)
+save("cast_line_month", [{"month": str(m_), **{k: float(r.get(k, 0)) for k in LINES}} for m_, r in lm.iterrows()], "Moulded units per month by line.")
+
+# working days = weekdays with any booking in the plant
+wd_all = pd.Series(sorted(d[d.date.dt.dayofweek < 5].date.unique()))
+cast_wo = d[d.flow == "casting"].groupby(["wo_base", "op"]).qty.sum().unstack()
+first_line = mo.sort_values("date").groupby("wo_base").work_centre.first()
+ycl = ycast.join(first_line.rename("line"), how="left")
+oee_c = []
+for wc in LINES:
+    g = mo[mo.work_centre == wc]
+    if len(g) < 30: continue
+    for per, sel in (("2021-2025", g.yr <= 2025), ("2025", g.yr == 2025), ("2026", g.yr == 2026)):
+        gg = g[sel]
+        if gg.empty: continue
+        wdays = wd_all[(wd_all.dt.year >= gg.yr.min()) & (wd_all.dt.year <= gg.yr.max())]
+        daily = gg.groupby("date").qty.sum()
+        A = len(daily) / max(len(wdays), 1)
+        best = g[g.yr <= 2025].groupby("date").qty.sum().quantile(0.9)
+        P = min(daily.mean() / best, 1.0) if best > 0 else np.nan
+        yy = ycl[(ycl.line == wc)]
+        yy = yy[yy.yr.between(gg.yr.min(), min(gg.yr.max(), 2025))] if per != "2026" else yy[yy.yr == 2026]
+        Qr = yy.desp.clip(upper=yy["first"]).sum() / yy["first"].sum() if len(yy) > 10 else np.nan
+        oee_c.append({"line": wc, "period": per, "active_days_pct": 100 * A, "units_per_active_day": daily.mean(), "best_day_p90": best,
+                      "performance_pct": 100 * P, "yield_pct": 100 * Qr if Qr == Qr else None,
+                      "oee_proxy_pct": 100 * A * P * Qr if Qr == Qr else None, "units": gg.qty.sum()})
+save("cast_oee", oee_c, "Output-based OEE proxy per moulding line (no time is booked on casting). A = days the line booked output / plant working days. P = mean units per active day / 90th percentile day (2021-2025). Q = quantity yield of orders moulded on the line.")
+c25 = [r for r in oee_c if r["period"] == "2021-2025" and r["oee_proxy_pct"] is not None]
+if c25:
+    b_ = max(c25, key=lambda r: r["oee_proxy_pct"]); w_ = min(c25, key=lambda r: r["oee_proxy_pct"])
+    kpi("cast_oee_best_line", b_["line"], "Best moulding line (OEE proxy)"); kpi("cast_oee_best", b_["oee_proxy_pct"], "Best moulding line OEE proxy", "%")
+    kpi("cast_oee_worst_line", w_["line"], "Weakest moulding line (OEE proxy)"); kpi("cast_oee_worst", w_["oee_proxy_pct"], "Weakest moulding line OEE proxy", "%")
+    wsum = sum(r["units"] for r in c25)
+    kpi("cast_oee_avg", sum(r["oee_proxy_pct"] * r["units"] for r in c25) / wsum, "Moulding OEE proxy, unit-weighted", "%")
+
+# yield by line and worst parts
+yl = []
+for wc in LINES:
+    g = ycl[ycl.line == wc]
+    if len(g) > 20:
+        yl.append({"line": wc, "orders": len(g), "units_started": g["first"].sum(), "units_lost": (g["first"] - g.desp.clip(upper=g["first"])).sum(),
+                   "yield_pct": 100 * g.desp.clip(upper=g["first"]).sum() / g["first"].sum(), "orders_short_pct": 100 * (g.ratio < 1).mean()})
+save("cast_yield_line", sorted(yl, key=lambda r: r["yield_pct"]), "Casting orders 2021-2026 by moulding line. Units lost = started minus despatched, per order.")
+ycp = ycl.join(d.groupby("wo_base").part_no.first().rename("part_no"))
+pp = ycp.groupby("part_no").apply(lambda g: pd.Series({"orders": len(g), "units_started": g["first"].sum(), "units_lost": (g["first"] - g.desp.clip(upper=g["first"])).sum(), "line": g.line.mode().iat[0] if g.line.notna().any() else None}))
+pp = pp[pp.orders >= 5]; pp["yield_pct"] = 100 * (1 - pp.units_lost / pp.units_started)
+save("cast_yield_part", pp.sort_values("units_lost", ascending=False).head(15).reset_index(), "Parts with 5+ casting orders, ranked by units lost between moulding and despatch.")
+kpi("cast_units_lost", ycl["first"].sum() - ycl.desp.clip(upper=ycl["first"]).sum(), "Casting units started but not despatched", "units")
+kpi("cast_lost_top15_share", 100 * pp.sort_values("units_lost", ascending=False).head(15).units_lost.sum() / max(pp.units_lost.sum(), 1), "Share of lost units in 15 parts", "%")
+
+# melt reference prefix (meaning to confirm)
+nt = mo.dropna(subset=["notes"]).copy()
+nt["ref"] = nt.notes.str.strip().str.upper().str.extract(r"^(F1|F2|F|B|A|K|M|C)")[0]
+nt.loc[nt.ref == "F", "ref"] = "F (no number)"
+mref = nt.groupby("wo_base").ref.first()
+yref = ycl.join(mref.rename("ref")).dropna(subset=["ref"])
+mr = yref.groupby("ref").apply(lambda g: pd.Series({"orders": len(g), "yield_pct": 100 * g.desp.clip(upper=g["first"]).sum() / g["first"].sum(), "orders_short_pct": 100 * (g.ratio < 1).mean()})).reset_index()
+mr["main_line"] = mr.ref.map(nt.groupby("ref").work_centre.agg(lambda s: s.mode().iat[0]))
+save("cast_melt_ref", mr.sort_values("orders", ascending=False), "Yield grouped by the prefix of the moulding note (for example F1-, F2-, b, a, k). Prefix meaning not confirmed.")
+
+# stage buffers (units waiting between stages, casting flow)
+st_dates = ev[ev.flow == "casting"].pivot_table(index="wo_base", columns="stage", values="first", aggfunc="min")
+st_qty = ev[ev.flow == "casting"].pivot_table(index="wo_base", columns="stage", values="qty", aggfunc="sum")
+days_b = pd.date_range("2021-01-04", END, freq="D")
+buf_rows = []
+for a, b, nm in (("Mould and cast", "Fettle", "Moulded, waiting to fettle"), ("Fettle", "Casting despatch", "Fettled, waiting to despatch")):
+    if a not in st_dates or b not in st_dates: continue
+    sub = pd.DataFrame({"a": st_dates[a], "b": st_dates[b], "q": st_qty[a]}).dropna(subset=["a"])
+    sub["b"] = sub["b"].fillna(END + pd.Timedelta(days=1)); sub["q"] = sub["q"].fillna(0)
+    sub = sub[((sub.b - sub.a).dt.days <= 365) & (sub.b > sub.a)]
+    delta = np.zeros(len(days_b) + 1)
+    np.add.at(delta, days_b.searchsorted(sub.a.values), sub.q.values)
+    np.add.at(delta, days_b.searchsorted(sub.b.values), -sub.q.values)
+    s_ = pd.Series(np.cumsum(delta)[:-1], index=days_b)
+    for t, v in s_.resample("W").mean().items(): buf_rows.append({"week": t.strftime("%Y-%m-%d"), "buffer": nm, "units": v})
+    kpi("buf_" + a.split()[0].lower(), s_[END - pd.Timedelta(days=90):].mean(), f"Average units {nm.lower()}, last 90 days", "units")
+    kpi("buf_" + a.split()[0].lower() + "_2025", s_["2025"].mean(), f"Average units {nm.lower()}, 2025", "units")
+save("cast_buffers", buf_rows, "Units waiting between casting stages per week (works order quantity from first booking at one stage to first booking at the next; orders waiting over a year excluded).")
+
+# waits by line
+wl = []
+for wc in LINES:
+    ids = first_line[first_line == wc].index
+    sd = st_dates.reindex(ids)
+    if "Fettle" in sd and len(sd) > 20:
+        w1 = (sd["Fettle"] - sd["Mould and cast"]).dt.days.dropna()
+        w2 = (sd.get("Casting despatch") - sd["Fettle"]).dt.days.dropna() if "Casting despatch" in sd else pd.Series(dtype=float)
+        wl.append({"line": wc, "orders": len(sd), "mould_to_fettle_median": w1.median(), "mould_to_fettle_p90": w1.quantile(.9), "fettle_to_desp_median": w2.median(), "fettle_to_desp_p90": w2.quantile(.9)})
+save("cast_waits_line", wl, "Calendar days between first bookings at each stage, by moulding line.")
+
+# fettling crew
+fe = d[(d.work_centre == "FETT")].copy()
+fe["crew"] = fe.notes.fillna("").str.strip().str.split(r"[\s,/]+").apply(lambda x: len([t for t in x if t.isalpha() and 1 < len(t) <= 3]))
+fdaily = fe.groupby("date").qty.sum()
+fc_ = fe[fe.crew > 0].groupby("crew").agg(bookings=("qty", "size"), units_per_booking=("qty", "median")).reset_index()
+fc_ = fc_[fc_.bookings >= 30]
+save("fettle_crew", fc_, "Fettling bookings by number of initials in the note (crew size, assumed). Median units per booking.")
+fy = fe.groupby("yr").agg(units=("qty", "sum"), days=("date", "nunique")).reset_index()
+fy["units_per_day"] = fy.units / fy.days; fy["year"] = fy.yr.astype(str)
+save("fettle_year", fy.drop(columns="yr"), "Fettled units, days with bookings and units per day.")
+
+# end-to-end flow map (2025)
+fm = []
+y25 = d[d.yr == 2025]
+for stg, sel in (("Mould and cast", y25.op.between(10, 19)), ("Fettle", y25.op.between(20, 59)), ("Casting inspection", y25.op.between(60, 69)), ("Core machining", y25.op.between(70, 79)),
+                 ("Casting despatch", y25.op.between(80, 99)), ("Machining", y25.op.between(100, 199)), ("Final inspection", y25.op.between(200, 279)), ("Machined despatch", y25.op.between(280, 299))):
+    g = y25[sel]
+    fm.append({"stage": stg, "units": g.qty.sum(), "orders": g.wo_base.nunique(), "parts": g.part_no.nunique(), "people": g.name.nunique(), "work_centres": g.work_centre.nunique()})
+fmw = {(a, b): v for a, b, v in zip(dg["from"], dg["to"], dg["median_days"])}
+for r in fm:
+    pair = {"Mould and cast": ("Mould and cast", "Fettle"), "Fettle": ("Fettle", "Casting despatch"), "Machining": ("Machining op 1", "Machined despatch")}.get(r["stage"])
+    r["median_wait_to_next_days"] = fmw.get(pair) if pair else None
+fm = [r for r in fm if r["units"] > 0]
+save("flow_map", fm, "2025 volumes by stage; median days to the next stage from process mining.")
+kpi("stream_overlap", len(set(d[d.op.between(10, 19)].part_no) & set(d[d.op.between(100, 269)].part_no)), "Part numbers both cast and machined here")
+kpi("cast_parts", d[d.op.between(10, 19)].part_no.nunique(), "Part numbers cast")
+kpi("mach_parts", d[d.op.between(100, 269)].part_no.nunique(), "Part numbers machined")
+pr = d[(d.type == "Lost") & d.lost_time.str.contains("Pattern", na=False)]
+kpi("pattern_repair_hrs", pr.hrs_clean.sum(), "Hours lost to pattern, die, core box and fixture repair", "hrs")
+kpi("pattern_repair_760", pr[pr.work_centre == "760"].hrs_clean.sum(), "Of which on 760", "hrs")
+kpi("pattern_repair_huv", pr[pr.work_centre == "HUVENE LATHE"].hrs_clean.sum(), "Of which on Huvene lathe", "hrs")
+
 save("kpis", KPI)
 print("report done", flush=True)
