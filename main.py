@@ -15,6 +15,8 @@ for args in (["pipeline/clean.py", src, "work/wip.parquet"],
     subprocess.run([PY, "-I", *args], check=True)
 
 eng = create_engine(os.environ["DATABASE_URL"].replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg2://", 1))
+with eng.begin() as c:
+    c.execute(text("DROP VIEW IF EXISTS machining_jobs")); c.execute(text("DROP VIEW IF EXISTS lost_time_by_month"))
 df = pd.read_parquet("work/wip2.parquet")
 df["flag_hrs_mismatch"] = df["flag_hrs_mismatch"].astype(bool)
 df.to_sql("time_entries", eng, if_exists="replace", index=False, chunksize=1000, method="multi")
