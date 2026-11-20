@@ -13,7 +13,8 @@ for args in (["pipeline/clean.py", src, "work/wip.parquet"],
              ["pipeline/report.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report"],
              ["pipeline/report2.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"],
              ["pipeline/report3.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"],
-             ["pipeline/report4.py", "work/wip2.parquet", "work/report", "data/ext"]):
+             ["pipeline/report4.py", "work/wip2.parquet", "work/report", "data/ext"],
+             ["pipeline/report5.py", "work/wip2.parquet", "work/report", "data/ext"]):
     print("running", args[0], flush=True)
     subprocess.run([PY, "-I", *args], check=True)
 
@@ -27,6 +28,9 @@ print("time_entries:", len(df), flush=True)
 if os.path.exists("work/sales_orders.csv"):
     so = pd.read_csv("work/sales_orders.csv", parse_dates=["entered", "required", "promised"])
     so.to_sql("sales_orders", eng, if_exists="replace", index=False, chunksize=1000, method="multi"); print("sales_orders:", len(so), flush=True)
+for pat, tab in (("data/ext/PCT_Core_Works_Orders_Continuum*.xlsx", "core_tasks"), ("data/ext/PCT_Order_Book_*.xlsx", "order_book")):
+    for x in sorted(glob.glob(pat))[-1:]:
+        t = pd.read_excel(x, sheet_name=0); t.to_sql(tab, eng, if_exists="replace", index=False); print(tab, len(t), flush=True)
 for x in sorted(glob.glob("data/ext/PCT_Invoice_Analysis_*.xlsx"))[-1:]:
     for sh, t in pd.read_excel(x, sheet_name=None).items():
         if sh in ("Notes", "Check against PDF totals"): continue
