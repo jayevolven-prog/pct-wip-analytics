@@ -27,6 +27,10 @@ print("time_entries:", len(df), flush=True)
 if os.path.exists("work/sales_orders.csv"):
     so = pd.read_csv("work/sales_orders.csv", parse_dates=["entered", "required", "promised"])
     so.to_sql("sales_orders", eng, if_exists="replace", index=False, chunksize=1000, method="multi"); print("sales_orders:", len(so), flush=True)
+for x in sorted(glob.glob("data/ext/PCT_Invoice_Analysis_*.xlsx"))[-1:]:
+    for sh, t in pd.read_excel(x, sheet_name=None).items():
+        if sh in ("Notes", "Check against PDF totals"): continue
+        t.to_sql("invoice_" + sh.lower().replace(" ", "_"), eng, if_exists="replace", index=False); print("invoice_" + sh.lower().replace(" ", "_"), len(t), flush=True)
 for x in sorted(glob.glob("data/ext/PCT_Scrap_Analysis_*.xlsx"))[-1:]:
     for sh, t in pd.read_excel(x, sheet_name=None).items():
         if sh in ("Notes", "Check against PDF totals"): continue
