@@ -12,7 +12,8 @@ for args in (["pipeline/clean.py", src, "work/wip.parquet"],
              ["pipeline/build_dash.py", "work/wip2.parquet", "work/results.json", "work/dash"],
              ["pipeline/report.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report"],
              ["pipeline/report2.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"],
-             ["pipeline/report3.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"]):
+             ["pipeline/report3.py", "work/wip2.parquet", "pipeline/stages.csv", "work/report", "pipeline"],
+             ["pipeline/report4.py", "work/wip2.parquet", "work/report", "data/ext"]):
     print("running", args[0], flush=True)
     subprocess.run([PY, "-I", *args], check=True)
 
@@ -23,6 +24,13 @@ df = pd.read_parquet("work/wip2.parquet")
 df["flag_hrs_mismatch"] = df["flag_hrs_mismatch"].astype(bool)
 df.to_sql("time_entries", eng, if_exists="replace", index=False, chunksize=1000, method="multi")
 print("time_entries:", len(df), flush=True)
+if os.path.exists("work/sales_orders.csv"):
+    so = pd.read_csv("work/sales_orders.csv", parse_dates=["entered", "required", "promised"])
+    so.to_sql("sales_orders", eng, if_exists="replace", index=False, chunksize=1000, method="multi"); print("sales_orders:", len(so), flush=True)
+for x in sorted(glob.glob("data/ext/PCT_Scrap_Analysis_*.xlsx"))[-1:]:
+    for sh, t in pd.read_excel(x, sheet_name=None).items():
+        if sh in ("Notes", "Check against PDF totals"): continue
+        t.to_sql("scrap_" + sh.lower().replace(" ", "_"), eng, if_exists="replace", index=False); print("scrap_" + sh.lower().replace(" ", "_"), len(t), flush=True)
 for f in glob.glob("work/dash/*.json"):
     name = "agg_" + os.path.basename(f)[:-5]
     pd.DataFrame(json.load(open(f))["rows"]).to_sql(name, eng, if_exists="replace", index=False)

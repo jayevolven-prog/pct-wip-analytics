@@ -75,6 +75,7 @@ rp["uplift_pct"] = 100 * (rp.cost_now / rp.cost_first - 1); rp["annual_gap_gbp"]
 rp["line"] = mo.groupby("part_no").work_centre.agg(lambda s: s.mode().iat[0]).reindex(rp.index)
 rpo = rp.sort_values("annual_gap_gbp", ascending=False).reset_index()[["part_no", "line", "first_year", "units", "units_12m", "hrs_per_casting", "cost_first", "cost_system_rate", "cost_now", "uplift_pct", "annual_gap_gbp", "annual_gap_vs_system_gbp"]]
 save("reprice", rpo.head(60), "Foundry labour per casting (moulding, fettling, despatch attendance hours) costed at the statutory minimum loaded rate in the part's first year and in 2026. Annual gap = cost increase x castings moulded in the last 12 months. Parts with 20+ castings and activity in the last 12 months. Labour only: no metal, energy or overhead.")
+save("reprice_all", rpo, "All active parts: foundry labour hours per casting and cost at first-year and 2026 minimum loaded rates.")
 save("reprice_summary", [{"parts": len(rp), "castings_12m": rp.units_12m.sum(), "labour_now_gbp": (rp.cost_now * rp.units_12m).sum(), "gap_vs_first_year_gbp": rp.annual_gap_gbp.sum(), "gap_vs_system_rate_gbp": rp.annual_gap_vs_system_gbp.sum(), "parts_first_made_before_2024": int((rp.first_year < 2024).sum()), "gap_from_pre_2024_parts_gbp": rp[rp.first_year < 2024].annual_gap_gbp.sum(), "top20_share_pct": 100 * rpo.head(20).annual_gap_gbp.sum() / rp.annual_gap_gbp.sum()}])
 
 # ===== 2. part churn
