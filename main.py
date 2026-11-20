@@ -17,7 +17,8 @@ for args in (["pipeline/clean.py", src, "work/wip.parquet"],
              ["pipeline/report5.py", "work/wip2.parquet", "work/report", "data/ext"],
              ["pipeline/report6.py", "work/wip2.parquet", "work/report", "data/ext"],
              ["pipeline/report7.py", "work/wip2.parquet", "work/report", "data/ext"],
-             ["pipeline/report8.py", "work/wip2.parquet", "work/report", "data/ext"]):
+             ["pipeline/report8.py", "work/wip2.parquet", "work/report", "data/ext"],
+             ["pipeline/report9.py", "work/wip2.parquet", "work/report", "data/ext"]):
     print("running", args[0], flush=True)
     subprocess.run([PY, "-I", *args], check=True)
 
