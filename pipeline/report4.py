@@ -54,6 +54,22 @@ for y in YRS[1:]:
 cy = {int(r["year"]): r for r in J("x_commercial_year")}
 save("price_index", [{"year": str(y), "price_index": idx[y], "matched_share_of_value_pct": cov[y], "wage_floor_index": 100 * cy[y]["loaded_min_rate"] / cy[2022]["loaded_min_rate"], "aluminium_index": 100 * cy[y]["lme_usd_t"] / cy[2022]["lme_usd_t"], "avg_price_per_unit": pl[pl.yr == y].order_net.sum() / pl[pl.yr == y].ordered.sum()} for y in YRS], "Chained Laspeyres selling-price index on parts sold in consecutive years (previous-year quantities as weights), 2022 = 100, beside the minimum loaded wage rate and LME aluminium. Average price per unit also moves with mix.")
 
+# ===== A2. revenue with and without price change (2025 prices as the base)
+_b = pl[(pl.yr == 2025) & (pl.ordered > 0) & (pl.order_net > 0)].groupby("key").agg(v=("order_net", "sum"), q=("ordered", "sum")); base25 = _b.v / _b.q
+lv = live.copy(); lv["base_price"] = lv.key.map(base25).where(lv.kind == "Product"); lv["has_base"] = lv.base_price.notna() & (lv.ordered > 0) & (lv.order_net > 0)
+lv["const_net"] = np.where(lv.has_base, lv.ordered * lv.base_price, lv.order_net); lv["units"] = np.where(lv.kind == "Product", lv.ordered, 0); lv["m"] = lv.entered.dt.to_period("M")
+def _row(lab, g, months, kind):
+    hb = g[g.has_base]
+    return {"period": lab, "kind": kind, "months": months, "value": g.order_net.sum(), "value_per_month": g.order_net.sum() / months, "value_at_2025_prices": g.const_net.sum(), "value_at_2025_prices_per_month": g.const_net.sum() / months, "price_effect": g.order_net.sum() - g.const_net.sum(), "price_effect_pct": 100 * (hb.order_net.sum() / hb.const_net.sum() - 1) if hb.const_net.sum() else None, "units": g.units.sum(), "units_per_month": g.units.sum() / months, "matched_value_pct": 100 * hb.order_net.sum() / g.order_net.sum() if g.order_net.sum() else None, "lines": len(g), "customers": g.customer.nunique()}
+rv = [_row(str(y), lv[lv.yr == y], 12, "year") for y in (2022, 2023, 2024, 2025)]
+for mth in pd.period_range("2026-01", END.to_period("M"), freq="M"): rv.append(_row(mth.strftime("%b %y"), lv[lv.m == mth], 1 if mth < END.to_period("M") else END.day / END.days_in_month, "month"))
+save("revenue_real", rv, f"Order value entered, with and without price change. Value at 2025 prices re-prices every product line at that part's own average 2025 selling price; lines for parts with no 2025 price (new parts, charges, tooling) are left at their actual value. Years are shown per month. The last month is a part month to {END:%d %b} and is scaled to a full month in the per-month figures.")
+def _half(a, b, lab):
+    g = lv[(lv.entered >= a) & (lv.entered <= b)]; return _row(lab, g, 1, "span")
+h26 = _half("2026-06-01", END, "Jun to 19 Nov 2026"); h25 = _half("2025-06-01", "2025-11-19", "Jun to 19 Nov 2025"); f26 = _half("2026-01-01", "2026-05-31", "Jan to May 2026"); f25 = _half("2025-01-01", "2025-05-31", "Jan to May 2025")
+for cur, prev in ((h26, h25), (f26, f25)):
+    cur["value_change_pct"] = 100 * (cur["value"] / prev["value"] - 1); cur["real_change_pct"] = 100 * (cur["value_at_2025_prices"] / prev["value_at_2025_prices"] - 1); cur["units_change_pct"] = 100 * (cur["units"] / prev["units"] - 1)
+save("revenue_real_spans", [f25, f26, h25, h26], "The first five months and the last six months of 2026 against the same months of 2025.")
 # ===== B. customers
 cv_ = live.groupby(["customer", "yr"]).order_net.sum().unstack(fill_value=0).reindex(columns=YRS, fill_value=0); cu = pl.groupby(["customer", "yr"]).ordered.sum().unstack(fill_value=0).reindex(columns=YRS, fill_value=0)
 cv_["v26a"] = cv_[2026] * ann; cv_ = cv_.sort_values(2026, ascending=False); t26 = cv_[2026].sum()
